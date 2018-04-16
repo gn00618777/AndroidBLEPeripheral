@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">AndroidBlePeriphial</string>
+    <string name="ble_not_supported">BLE not supported</string>>
+</resources>
