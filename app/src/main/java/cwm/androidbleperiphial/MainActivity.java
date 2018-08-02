@@ -16,6 +16,7 @@ import android.bluetooth.le.BluetoothLeAdvertiser;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.os.Handler;
 import android.os.ParcelUuid;
 import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
@@ -34,13 +35,15 @@ public class MainActivity extends AppCompatActivity {
 
     private static final int REQUEST_ENABLE_BT = 1;
     private static UUID UUID_SERVER = UUID.fromString("0000fff0-0000-1000-8000-00805f9b34fb");
-    private static UUID UUID_CHARREAD = UUID.fromString("0000fff1-0000-1000-8000-00805f9b34fb");
     private static UUID UUID_CHARWRITE = UUID.fromString("0000fff2-0000-1000-8000-00805f9b34fb");
     private static UUID UUID_DESCRIPTOR = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
     public static final String TAG = "bernie";
 
     private BluetoothGattServer bluetoothGattServer;
     private BluetoothGattCharacteristic characteristicRead;
+
+    private Thread thread;
+    private boolean RUN_THREAD = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -77,7 +80,7 @@ public class MainActivity extends AppCompatActivity {
                 .setIncludeTxPowerLevel(false)
                 .build();
         AdvertiseData scanResponseData = new AdvertiseData.Builder()
-                //.addServiceUuid(new ParcelUuid(UUID_SERVER))
+                .addServiceUuid(new ParcelUuid(UUID_SERVER))
                 .setIncludeTxPowerLevel(false)
                 .build();
 
@@ -111,12 +114,6 @@ public class MainActivity extends AppCompatActivity {
     public void initServices(Context context){
         bluetoothGattServer = mBluetoothManager.openGattServer(context, bluetoothGattServerCallback);
         BluetoothGattService service = new BluetoothGattService(UUID_SERVER, BluetoothGattService.SERVICE_TYPE_PRIMARY);
-        //add a read characteristic.
-        characteristicRead = new BluetoothGattCharacteristic(UUID_CHARREAD, BluetoothGattCharacteristic.PROPERTY_READ, BluetoothGattCharacteristic.PERMISSION_READ);
-        //add a descriptor
-        BluetoothGattDescriptor descriptor = new BluetoothGattDescriptor(UUID_DESCRIPTOR, BluetoothGattCharacteristic.PERMISSION_WRITE);
-        characteristicRead.addDescriptor(descriptor);
-        service.addCharacteristic(characteristicRead);
 
         //add a write characteristic.
         BluetoothGattCharacteristic characteristicWrite = new BluetoothGattCharacteristic(UUID_CHARWRITE,
@@ -125,11 +122,17 @@ public class MainActivity extends AppCompatActivity {
                         BluetoothGattCharacteristic.PROPERTY_NOTIFY,
                 BluetoothGattCharacteristic.PERMISSION_WRITE | BluetoothGattCharacteristic.PERMISSION_READ);
 
+        //add a descriptor
+        BluetoothGattDescriptor descriptor = new BluetoothGattDescriptor(UUID_DESCRIPTOR, BluetoothGattCharacteristic.PERMISSION_WRITE);
+        characteristicWrite.addDescriptor(descriptor);
+
         service.addCharacteristic(characteristicWrite);
 
         bluetoothGattServer.addService(service);
 
         showText("2. initServices ok");
+
+
     }
     private BluetoothGattServerCallback bluetoothGattServerCallback = new BluetoothGattServerCallback() {
 
@@ -144,6 +147,7 @@ public class MainActivity extends AppCompatActivity {
         public void onServiceAdded(int status, BluetoothGattService service) {
             super.onServiceAdded(status, service);
             Log.e(TAG, String.format("onServiceAdded：status = %s", status));
+
         }
 
         @Override
@@ -162,13 +166,38 @@ public class MainActivity extends AppCompatActivity {
             //4.处理响应内容
             onResponseToClient(requestBytes, device, requestId, characteristic);
         }
-
+int i = 0;
         @Override
-        public void onDescriptorWriteRequest(BluetoothDevice device, int requestId, BluetoothGattDescriptor descriptor, boolean preparedWrite, boolean responseNeeded, int offset, byte[] value) {
+        public void onDescriptorWriteRequest(final BluetoothDevice device, int requestId, BluetoothGattDescriptor descriptor, boolean preparedWrite, boolean responseNeeded, int offset, byte[] value) {
             Log.e(TAG, String.format("2.onDescriptorWriteRequest:device name = %s, address = %s", device.getName(), device.getAddress()));
             Log.e(TAG, String.format("2.onDescriptorWriteRequest:requestId = %s, preparedWrite = %s, responseNeeded = %s, offset = %s, value = %s,", requestId, preparedWrite, responseNeeded, offset, OutputStringUtil.toHexString(value)));
 
             bluetoothGattServer.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value);
+
+            if (value[0] == 1) { //enable notification
+                RUN_THREAD = true;
+                thread = new Thread() {
+                    @Override
+                    public void run() {
+                        while (RUN_THREAD) {
+                            try {
+                                Thread.sleep(10);
+                                notifyData(device, new byte[]{(byte) i}, false);
+                                i++;
+                            } catch (InterruptedException e) {
+                                e.printStackTrace();
+                            }
+                        }
+                    }
+                };
+                thread.start();
+            } else { //disable notification
+                  RUN_THREAD = false;
+                  thread.interrupt();
+                  thread = null;
+            }
+
+
         }
 
         @Override
@@ -179,6 +208,10 @@ public class MainActivity extends AppCompatActivity {
             bluetoothGattServer.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, null);
         }
 
+        @Override
+           public void onNotificationSent(BluetoothDevice device, int status) {
+            Log.e(TAG, String.format("onNotificationSent  name = %s, address = %s", device.getName(), device.getAddress()));
+        }
     };
 
     private void onResponseToClient(byte[] reqeustBytes, BluetoothDevice device, int requestId, BluetoothGattCharacteristic characteristic) {
@@ -192,6 +225,23 @@ public class MainActivity extends AppCompatActivity {
         bluetoothGattServer.notifyCharacteristicChanged(device, characteristicRead, false);
 
         showText("4.回應:" + str);
+    }
+
+    private void notifyData(final BluetoothDevice device, byte[] value, final boolean confim) {
+
+        BluetoothGattCharacteristic characteristic = null;
+        for (BluetoothGattService service : bluetoothGattServer.getServices()) {
+            for (BluetoothGattCharacteristic mcharacteristic : service.getCharacteristics()) {
+                if(mcharacteristic.getDescriptor(UUID_DESCRIPTOR) != null)
+                    characteristic = mcharacteristic;
+                    break;
+            }
+        }
+        if (characteristic != null) {
+            characteristic.setValue(value);
+            bluetoothGattServer.notifyCharacteristicChanged(device, characteristic, confim);
+
+        }
     }
 
 }
